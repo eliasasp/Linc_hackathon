@@ -29,10 +29,12 @@ fx_pairs_map = {
 }
 
 # ===== STRATEGY PARAMETERS =====
-ROLL_WIN      = 30
-Z_ENTRY       = 1.5
-Z_EXIT        = 0.75
-POSITION_SIZE = 5000
+ROLL_WIN       = 30
+Z_ENTRY        = 1.0
+Z_EXIT         = 0.5
+VOL_WINDOW     = 30       # lookback for realised volatility
+VOL_TARGET     = 0.01     # target 1% daily vol per leg
+MAX_NOTIONAL   = 100_000  # cap per leg to avoid oversizing in low-vol regimes
 
 # ===== PRECOMPUTE SIGNALS =====
 def rolling_beta(y, x, window):
@@ -54,8 +56,14 @@ mu     = spread.rolling(ROLL_WIN).mean()
 sigma  = spread.rolling(ROLL_WIN).std()
 z      = (spread - mu) / sigma.replace(0, np.nan)
 
+# Realised daily volatility (annualised not needed — we use daily vol directly)
+ret_bench = benchmark.pct_change()
+ret_other = other.pct_change()
+vol_bench = ret_bench.rolling(VOL_WINDOW).std()
+vol_other = ret_other.rolling(VOL_WINDOW).std()
+
 # ===== STATE =====
-signal = 0   # +1 = long Idx_01 / short Idx_03, -1 = short Idx_01 / long Idx_03
+signal = 0  # +1 = long Idx_01 / short Idx_03, -1 = short Idx_01 / long Idx_03
 
 def strategy(row_pos, cash, portfolio, signal_prices, data):
     global signal
@@ -82,9 +90,19 @@ def strategy(row_pos, cash, portfolio, signal_prices, data):
     if signal == prev:
         return orders
 
-    # Target shares
-    bench_tgt = int(POSITION_SIZE * signal)
-    other_tgt = int(-POSITION_SIZE * beta[date] * signal)
+    # Volatility-scaled position sizing:
+    # shares = VOL_TARGET / daily_vol / price  → each leg risks VOL_TARGET of portfolio per day
+    vb = vol_bench[date]
+    vo = vol_other[date]
+
+    if pd.isna(vb) or pd.isna(vo) or vb == 0 or vo == 0:
+        return orders
+
+    bench_notional = min(VOL_TARGET / vb * signal_prices[BENCHMARK], MAX_NOTIONAL)
+    other_notional = min(VOL_TARGET / vo * signal_prices[OTHER],     MAX_NOTIONAL)
+
+    bench_tgt = int(bench_notional / signal_prices[BENCHMARK] * signal)
+    other_tgt = int(-other_notional / signal_prices[OTHER] * beta[date] * signal)
 
     for ticker, tgt in [(BENCHMARK, bench_tgt), (OTHER, other_tgt)]:
         curr  = portfolio.get(ticker, 0)
@@ -106,4 +124,15 @@ simulator.save_results(
     orders_file    = "orders_meanrev.csv",
     portfolio_file = "portfolio_meanrev.csv",
 )
-simulator.plot_performance(prices, save_file="meanrev_1.5,0.75.png")
+
+
+"""
+test to variate the position sizes depending on the volatility
+increase amount of winning bets
+
+Regime filter:
+Only trade when the spread is actually mean-reverting, not trending. Compute the half-life of the spread over a rolling window and skip trading if it's above e.g. 30 days — that signals the relationship has broken down temporarily
+Alternatively, only trade when the rolling correlation between Idx_01 and Idx_03 is above a threshold (e.g. 0.7), since low correlation periods are when pair trades blow up
+
+Think more about risk, can't have the same bet size
+"""
