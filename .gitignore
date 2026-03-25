@@ -1,4 +1,2 @@
 __pycache__/
 venv/
-*.csv/
-trading_simulator.py
