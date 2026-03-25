@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 
 def estimate_sv_parameters(returns):
     """
-    Snabbuppskattning av mu, phi och sigma_eta direkt från data.
+    Snabbuppskattning av mu, phi och sigma_eta direkt från data. Vill ha stängningspris (inte log avkastning)
     """
     # Ta bort nollor för att undvika log(0)-krascher
     ret_clean = returns[returns != 0]

@@ -106,4 +106,4 @@ def test_correlation_filter():
     plt.show()
 
 # Kör testet
-test_correlation_filter()
+#test_correlation_filter()
