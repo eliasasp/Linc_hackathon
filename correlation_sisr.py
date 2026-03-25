@@ -5,7 +5,7 @@ import volatility_sisr
 from itertools import combinations
 
 class DynamicCorrelationMatrix:
-    def __init__(self, assets, n_particles=300, sigma_z=0.02):
+    def __init__(self, assets, n_particles=500, sigma_z=0.02):
         self.assets = assets
         self.n_assets = len(assets)
         self.asset_to_idx = {asset: i for i, asset in enumerate(assets)}

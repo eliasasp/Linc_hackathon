@@ -4,7 +4,7 @@ from scipy.stats import norm
 import matplotlib.pyplot as plt
 
 class IncrementalVolatilityFilter:
-    def __init__(self, mu, phi, sigma_eta, n_particles=300):
+    def __init__(self, mu, phi, sigma_eta, n_particles=500):
         self.mu = mu
         self.phi = phi
         self.sigma_eta = sigma_eta
