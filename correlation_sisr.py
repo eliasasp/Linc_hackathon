@@ -185,4 +185,4 @@ def get_top_correlations(matrix, assets, top_n=10):
 
 
 # Kör testet för hela portföljen
-test_full_matrix_step_by_step()
+# test_full_matrix_step_by_step()
