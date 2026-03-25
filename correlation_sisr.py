@@ -147,7 +147,7 @@ def test_full_matrix_step_by_step():
         current_matrix = corr_manager.update(returns_today, vols_today)
         
         # Hämta de 10 högsta
-        top_10 = get_top_correlations(current_matrix, all_assets, top_n=10)
+        top_10 = get_top_correlations(current_matrix, all_assets, top_n=1)
         
         print(f"\n--- TOPP 10 KORRELATIONER DAG {t} ---")
         for i, item in enumerate(top_10, 1):
@@ -178,7 +178,7 @@ def get_top_correlations(matrix, assets, top_n=10):
     
     # Sortera listan baserat på värdet (fallande)
     sorted_corr = sorted(correlations, key=lambda x: x['value'], reverse=True)
-    
+    #print( sorted_corr[:top_n] )
     return sorted_corr[:top_n]
 
 
