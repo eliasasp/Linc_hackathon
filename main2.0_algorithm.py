@@ -58,6 +58,18 @@ def main_algorithm(row_pos, cash, portfolio, signal_prices, data):
         vols_today[asset] = vol_filters[asset].update(p_today)
         last_prices[asset] = p_today
 
+    
+    # +++ NYTT: BERÄKNA ADAPTIVT ENTRY-KRAV +++
+    # Vi mäter marknadens totala stress genom snittvolatiliteten för alla assets
+    avg_market_vol = np.mean(list(vols_today.values()))
+    
+    # Om marknadsvolten är högre än params['base_vol'] (t.ex. 0.01), höjer vi ribban för Z-score
+    # Detta stoppar oss från att "jaga brus" under kriser som 1994
+    base_vol = params.get('base_vol', 0.01) 
+    vol_multiplier = max(1.0, avg_market_vol / base_vol)
+    adaptive_z_entry = params['z_entry_lo'] * vol_multiplier
+
+
     # ---------------------------------------------------------
     # 2. UPPDATERA MATRISEN (SISR Korrelation)
     # ---------------------------------------------------------
@@ -67,67 +79,8 @@ def main_algorithm(row_pos, cash, portfolio, signal_prices, data):
     # Vänta tills vi fyllt historiken innan vi börjar handla
     if data['step_count'] < params['window']:
         return []
-    
 
     # ---------------------------------------------------------
-    # 3. HANTERA BEFINTLIGA POSITIONER (Asymmetrisk Stop-Loss)
-    # ---------------------------------------------------------
-    pairs_to_close = []
-    
-    for pair_key, p_data in open_pairs.items():
-        a1, a2 = pair_key
-        direction = p_data['direction']
-        
-        # Beräkna Z-score för den totala spread-exiten (vinsthemtagning)
-        a1_idx = corr_manager.asset_to_idx[a1]
-        a2_idx = corr_manager.asset_to_idx[a2]
-        rho_today = current_matrix[a1_idx, a2_idx]
-        vol_today = vols_today[a1] + vols_today[a2] + 2 * vols_today[a1] * vols_today[a2] * rho_today
-        z = calculate_zscore(history[a1], history[a2], vol_today)
-
-        # Hämta dagens returns för att se trenden
-        ret_a1 = returns_today.get(a1, 0)
-        ret_a2 = returns_today.get(a2, 0)
-        
-        # 1. Standard Exit (Vinsthemtagning via Z-score)
-        if (direction == 1 and z > -params['z_exit']) or (direction == -1 and z < params['z_exit']):
-            if direction == 1:
-                orders.append(('SELL', a1, p_data['q1']))
-                orders.append(('BUY', a2, p_data['q2']))
-            else:
-                orders.append(('BUY', a1, p_data['q1']))
-                orders.append(('SELL', a2, p_data['q2']))
-            pairs_to_close.append(pair_key)
-            continue # Paret stängt helt, gå till nästa
-
-        # 2. Individuell Stop-Loss (Trend-baserad)
-        # Vi använder p_data['q1_active'] för att se om benet fortfarande är öppet
-        if p_data.get('q1_active', True):
-            # Om vi är lång a1 (direction 1) och den trendar neråt kraftigt
-            if direction == 1 and ret_a1 < -params.get('trend_stop', 0.02):
-                orders.append(('SELL', a1, p_data['q1']))
-                p_data['q1_active'] = False
-            # Om vi är kort a1 (direction -1) och den trendar uppåt kraftigt
-            elif direction == -1 and ret_a1 > params.get('trend_stop', 0.02):
-                orders.append(('BUY', a1, p_data['q1']))
-                p_data['q1_active'] = False
-
-        if p_data.get('q2_active', True):
-            # Om vi är kort a2 (direction 1) och den trendar uppåt kraftigt
-            if direction == 1 and ret_a2 > params.get('trend_stop', 0.02):
-                orders.append(('BUY', a2, p_data['q2']))
-                p_data['q2_active'] = False
-            # Om vi är lång a2 (direction -1) och den trendar neråt kraftigt
-            elif direction == -1 and ret_a2 < -params.get('trend_stop', 0.02):
-                orders.append(('SELL', a2, p_data['q2']))
-                p_data['q2_active'] = False
-
-        # Om båda benen nu är stängda via stop-loss, rensa paret
-        if not p_data.get('q1_active', True) and not p_data.get('q2_active', True):
-            pairs_to_close.append(pair_key)
-
-
-    '''# ---------------------------------------------------------
     # 3. HANTERA BEFINTLIGA POSITIONER (Exit & Stop-Loss)
     # ---------------------------------------------------------
     pairs_to_close = []
@@ -145,6 +98,12 @@ def main_algorithm(row_pos, cash, portfolio, signal_prices, data):
         direction = p_data['direction']
         
         exit_trade = False
+
+        # ===== **TIME STOP** (NYTT BLOCK) =====
+        time_in_trade = data['step_count'] - p_data['entry_step']
+
+        if time_in_trade > params['time_stop']:
+            exit_trade = True
         
         # Om vi köpte a1 och blankade a2 (direction == 1, vi väntade på att Z skulle gå UPP)
         if direction == 1:
@@ -170,13 +129,13 @@ def main_algorithm(row_pos, cash, portfolio, signal_prices, data):
             
     # Städa bort de stängda paren från minnet
     for pk in pairs_to_close:
-        del open_pairs[pk]'''
+        del open_pairs[pk]
 
     # ---------------------------------------------------------
     # 4. HITTA OCH ÖPPNA NYA PAIRS
     # ---------------------------------------------------------
     # Hämta de topp 10 mest korrelerade paren idag
-    top_10 = correlation_sisr.get_top_correlations(current_matrix, all_assets, top_n=18)
+    top_10 = correlation_sisr.get_top_correlations(current_matrix, all_assets, top_n=16)
     
     for item in top_10:
         rho = item['value']
@@ -207,7 +166,7 @@ def main_algorithm(row_pos, cash, portfolio, signal_prices, data):
         z = calculate_zscore(history[a1], history[a2], vol_today)
         
         # Handla endast om spridningen är onormalt stor
-        if abs(z) > params['z_entry_lo']:
+        if abs(z) > adaptive_z_entry:
             
             # Insats: 5% av totala kassan per "ben" i paret
             notional = cash * position_size
@@ -217,17 +176,17 @@ def main_algorithm(row_pos, cash, portfolio, signal_prices, data):
             if q1 == 0 or q2 == 0:
                 continue
                 
-            if z > params['z_entry_lo']:
+            if z > adaptive_z_entry:
                 # Z är hög. Det betyder att a1 är övervärderad i förhållande till a2.
                 orders.append(('SELL', a1, q1)) # Blanka a1
                 orders.append(('BUY', a2, q2))  # Köp a2
-                open_pairs[pair_key] = {'direction': -1, 'q1': q1, 'q2': q2, 'entry_z': z}
+                open_pairs[pair_key] = {'direction': -1, 'q1': q1, 'q2': q2, 'entry_z': z, 'entry_step': data['step_count']}
                 
-            elif z < -params['z_entry_lo']:
+            elif z < -adaptive_z_entry:
                 # Z är låg. Det betyder att a1 är undervärderad.
                 orders.append(('BUY', a1, q1))  # Köp a1
                 orders.append(('SELL', a2, q2)) # Blanka a2
-                open_pairs[pair_key] = {'direction': 1, 'q1': q1, 'q2': q2, 'entry_z': z}
+                open_pairs[pair_key] = {'direction': 1, 'q1': q1, 'q2': q2, 'entry_z': z, 'entry_step': data['step_count']}
 
     return orders
 
@@ -281,11 +240,13 @@ def run_backtest():
         'open_pairs': {}, 
         'params': {
             'window': 60,         # Dagar för rullande medelvärde
-            'corr_thresh': 0.6,  # Lägsta korrelation för att överväga paret
-            'z_entry_lo': 1.3,       # Starta bettet om z > z_entry_lo
+            'corr_thresh': 0.58,  # Lägsta korrelation för att överväga paret
+            'z_entry_lo': 1.4,       # Starta bettet om z > z_entry_lo
             #'z_entry_hi': 3,        # .. och om z < z_entry hi
+            'base_vol': 0.02,       #(Normal dags-volatilitet)
             'z_exit': 0.25,        # Ta vinst när Z går under [...]
-            'z_stop': 9          # Panik-sälj om spridningen fortsätter 
+            'z_stop': 9,          # Panik-sälj om spridningen fortsätter 
+            'time_stop': 1e8
         }
     }
     
@@ -309,7 +270,8 @@ if __name__ == "__main__":
     run_backtest()
  
 
-    plot_pairs_trade('prices.csv', 'pairs_orders.csv', 'Idx_04', 'Stock_02')
+    '''plot_pairs_trade('prices.csv', 'pairs_orders.csv', 'Idx_04', 'Stock_02')
     plot_pairs_trade('prices.csv', 'pairs_orders.csv', 'Idx_04', 'Stock_03')
     plot_pairs_trade('prices.csv', 'pairs_orders.csv', 'Idx_04', 'Stock_09')
-    plot_pairs_trade('prices.csv', 'pairs_orders.csv', 'Idx_02', 'Idx_03')
+    plot_pairs_trade('prices.csv', 'pairs_orders.csv', 'Idx_02', 'Idx_03')'''
+
