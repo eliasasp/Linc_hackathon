@@ -7,32 +7,6 @@ from volatility_sisr import run_volatility_filter_on_prices
 from correlation_sisr import particle_filter_correlation
 from trading_simulator import TradingSimulator
 
-# ==========================================
-# 1. LADDA DATA OCH METADATA
-# ==========================================
-prices = pd.read_csv("prices.csv", index_col="Date", parse_dates=True)
-STOCK_COLS = [c for c in prices.columns if c.startswith("Stock_")]
-FX_COLS    = [c for c in prices.columns if c.startswith("FX_")]
-
-print(f"Laddade {len(prices)} handelsdagar, {len(prices.columns)} tillgångar")
-
-equity_ccy = {
-    'Stock_01': 'Crncy_03', 'Stock_02': 'Crncy_04', 'Stock_03': 'Crncy_04',
-    'Stock_04': 'Crncy_02', 'Stock_05': 'Crncy_03', 'Stock_06': 'Crncy_02',
-    'Stock_07': 'Crncy_03', 'Stock_08': 'Crncy_02', 'Stock_09': 'Crncy_04',
-    'Stock_10': 'Crncy_03', 'Stock_11': 'Crncy_01', 'Stock_12': 'Crncy_04',
-    'Stock_13': 'Crncy_01', 'Stock_14': 'Crncy_01', 'Stock_15': 'Crncy_01',
-}
-
-fx_pairs_map = {
-    'FX_01': ('Crncy_02', 'Crncy_01'), 'FX_02': ('Crncy_04', 'Crncy_02'),
-    'FX_03': ('Crncy_04', 'Crncy_03'), 'FX_04': ('Crncy_02', 'Crncy_03'),
-    'FX_05': ('Crncy_01', 'Crncy_03'), 'FX_06': ('Crncy_04', 'Crncy_01'),
-}
-
-# ==========================================
-# 2. SKANNER (Hittar de bästa paren)
-# ==========================================
 def find_best_pairs(prices_df, n_pairs=5):
     """
     Skannar snabbt igenom all data för att hitta de par med starkast 
@@ -132,6 +106,7 @@ target_shares_df = compute_pf_pairs_positions(prices)
 # ==========================================
 # 4. STRATEGI & ORDERHANTERING
 # ==========================================
+
 def strategy(row_pos, cash, portfolio, signal_prices, data):
     orders = []
     date = data.index[row_pos]

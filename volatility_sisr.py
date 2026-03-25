@@ -3,6 +3,58 @@ import numpy as np
 from scipy.stats import norm
 import matplotlib.pyplot as plt
 
+class IncrementalVolatilityFilter:
+    def __init__(self, mu, phi, sigma_eta, n_particles=1000):
+        self.mu = mu
+        self.phi = phi
+        self.sigma_eta = sigma_eta
+        self.n_particles = n_particles
+        
+        # Initiera partiklar för dag 0
+        self.particles_h = np.random.normal(
+            mu, 
+            sigma_eta / np.sqrt(1 - phi**2), 
+            n_particles
+        )
+        self.last_price = None
+
+    def update(self, current_price):
+        """
+        Matas med dagens pris. Uppdaterar partiklarna ETT steg och 
+        returnerar dagens uppskattade volatilitet.
+        """
+        if self.last_price is None:
+            self.last_price = current_price
+            # Kan inte beräkna avkastning första dagen, returnera ett neutralt startvärde
+            return np.exp(self.mu / 2) 
+        
+        # 1. Beräkna dagens log-avkastning
+        y_t = np.log(current_price / self.last_price)
+        self.last_price = current_price
+        
+        if y_t == 0:
+            y_t = 1e-6 # Undvik division med noll/krascher
+            
+        # 2. Predict (Flytta partiklarna framåt)
+        noise = np.random.normal(0, self.sigma_eta, self.n_particles)
+        self.particles_h = self.mu + self.phi * (self.particles_h - self.mu) + noise
+        
+        # 3. Update (Väg partiklarna baserat på hur väl de förklarar dagens avkastning)
+        particle_std_devs = np.exp(self.particles_h / 2)
+        weights = norm.pdf(y_t, loc=0, scale=particle_std_devs)
+        weights += 1e-300 
+        weights /= np.sum(weights)
+        
+        # 4. Estimate (Dagens volatilitet)
+        estimated_volatility = np.sum(weights * particle_std_devs)
+        
+        # 5. Resample (Byt ut dåliga partiklar mot bra)
+        indices = np.random.choice(self.n_particles, size=self.n_particles, p=weights)
+        self.particles_h = self.particles_h[indices]
+
+        return estimated_volatility
+
+
 def estimate_sv_parameters(returns):
     """
     Snabbuppskattning av mu, phi och sigma_eta direkt från data. Vill ha stängningspris (inte log avkastning)
@@ -79,45 +131,54 @@ def run_volatility_filter_on_prices(prices_series, n_particles=1000):
 
     return estimated_volatility
 
-def test_auto_volatility_filter():
-    print("Startar test av automatiskt partikelfilter...")
+
+def test_incremental_volatility_filter():
+    print("Startar test av det INKREMENTELLA partikelfiltret...")
     
-    # 1. Läs in er hackathon-data
+    # 1. Läs in data (skapa en låtsas-serie om du inte har filen än)
     try:
         prices = pd.read_csv('prices.csv', index_col='Date', parse_dates=['Date'])
+        stock_prices = prices['Stock_01']
     except FileNotFoundError:
-        print("Kunde inte hitta 'prices.csv'. Se till att filen ligger i samma mapp som skriptet.")
-        return
-
-    # 2. Välj vilken tillgång du vill testa på (Prova gärna att byta till 'FX_01' eller 'Comm_01' sen!)
-    asset = 'Stock_01'
-    stock_prices = prices[asset]
+        print("Kunde inte hitta 'prices.csv'. Skapar fejk-data för att testa!")
+        # Fejk-data för att bevisa att filtret snurrar
+        np.random.seed(42)
+        returns = np.random.normal(0, 0.02, 500)
+        stock_prices = pd.Series(100 * np.exp(np.cumsum(returns)))
     
-    # 3. Kör "All-in-one"-funktionen!
-    # Den sköter nu allt: beräknar avkastning, estimerar parametrar och kör filtret.
-    dold_volatilitet = run_volatility_filter_on_prices(stock_prices)
+    # 2. Räkna ut log-avkastningen för att estimera parametrarna
+    # (Mindre felskrivning i din docstring: funktionen VILL HA avkastning, inte stängningspris, 
+    # och det är exakt det du ger den här, så det är helt rätt!)
+    returns = np.log(stock_prices / stock_prices.shift(1)).dropna().values
+    mu, phi, sigma_eta = estimate_sv_parameters(returns)
+    print(f"Estimerade parametrar -> mu: {mu:.2f}, phi: {phi:.2f}, sigma_eta: {sigma_eta:.2f}")
 
-    # 4. Rita upp resultatet (Pris överst, Volatilitet underst)
+    # 3. Skapa en instans av ditt NYA filter
+    my_filter = IncrementalVolatilityFilter(mu, phi, sigma_eta, n_particles=1000)
+
+    # 4. Mata filtret steg-för-steg (precis som simulatorn kommer göra)
+    estimerad_vol = []
+    for price in stock_prices:
+        vol = my_filter.update(price)
+        estimerad_vol.append(vol)
+
+    # 5. Plotta
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
 
-    # Övre grafen: Aktiens pris
-    ax1.plot(stock_prices.index, stock_prices, color='blue', label=f'Prisutveckling {asset}')
-    ax1.set_title(f'SISR Partikelfilter med auto-parametrar för {asset}')
-    ax1.set_ylabel('Normaliserat Pris')
+    ax1.plot(stock_prices.values, color='blue', label='Prisutveckling')
+    ax1.set_title('Inkrementellt Partikelfilter (Objektorienterat)')
+    ax1.set_ylabel('Pris')
     ax1.grid(True)
     ax1.legend()
 
-    # Undre grafen: Estimerad volatilitet
-    # Notera att volatilitets-arrayen är 1 steg kortare pga log-avkastningen, så vi skippar första datumet
-    ax2.plot(stock_prices.index[1:], dold_volatilitet, color='red', label='Dold Volatilitet (\u03C3)')
+    ax2.plot(estimerad_vol, color='red', label='Dold Volatilitet (\u03C3)')
     ax2.set_ylabel('Volatilitet')
-    ax2.set_xlabel('Datum')
+    ax2.set_xlabel('Dagar')
     ax2.grid(True)
     ax2.legend()
 
-    plt.xticks(rotation=45)
     plt.tight_layout()
     plt.show()
 
-# Kör funktionen
-#test_auto_volatility_filter()
+# Testa den nya klassen!
+#test_incremental_volatility_filter()
