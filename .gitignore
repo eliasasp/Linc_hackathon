@@ -1,3 +1,7 @@
 __pycache__/
 venv/
-*.csv
+# Ignorera alla resultatfiler
+*_orders.csv
+*_portfolio.csv
+*_performance.csv
+*.png
