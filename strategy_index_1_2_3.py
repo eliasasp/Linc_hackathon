@@ -6,9 +6,9 @@ from trading_simulator import TradingSimulator
 prices = pd.read_csv("prices.csv", index_col="Date", parse_dates=True)
 
 BENCHMARK = "Idx_01"
-OTHER     = "Idx_03"
+OTHERS    = ["Idx_02", "Idx_03"]
 
-print(f"Loaded {len(prices)} trading days | Pair: {BENCHMARK} / {OTHER}")
+print(f"Loaded {len(prices)} trading days | Pairs: {BENCHMARK} vs {OTHERS}")
 
 # ===== ASSET METADATA =====
 equity_ccy = {
@@ -32,7 +32,7 @@ fx_pairs_map = {
 ROLL_WIN      = 30
 Z_ENTRY       = 1.5
 Z_EXIT        = 0.75
-POSITION_SIZE = 5000
+POSITION_SIZE = 100
 
 # ===== PRECOMPUTE SIGNALS =====
 def rolling_beta(y, x, window):
@@ -46,47 +46,56 @@ def rolling_beta(y, x, window):
     return betas
 
 benchmark = prices[BENCHMARK]
-other     = prices[OTHER]
 
-beta   = rolling_beta(benchmark, other, ROLL_WIN)
-spread = benchmark - beta * other
-mu     = spread.rolling(ROLL_WIN).mean()
-sigma  = spread.rolling(ROLL_WIN).std()
-z      = (spread - mu) / sigma.replace(0, np.nan)
+pair_data = {}
+for other in OTHERS:
+    x      = prices[other]
+    beta   = rolling_beta(benchmark, x, ROLL_WIN)
+    spread = benchmark - beta * x
+    mu     = spread.rolling(ROLL_WIN).mean()
+    sigma  = spread.rolling(ROLL_WIN).std()
+    z      = (spread - mu) / sigma.replace(0, np.nan)
+    pair_data[other] = {"beta": beta, "z": z}
 
 # ===== STATE =====
-signal = 0   # +1 = long Idx_01 / short Idx_03, -1 = short Idx_01 / long Idx_03
+signals = {other: 0 for other in OTHERS}
 
 def strategy(row_pos, cash, portfolio, signal_prices, data):
-    global signal
     orders = []
     date   = data.index[row_pos]
 
-    if date not in z.index or pd.isna(z[date]) or pd.isna(beta[date]):
-        return orders
+    desired = {BENCHMARK: 0, **{o: 0 for o in OTHERS}}
 
-    z_val = z[date]
-    prev  = signal
+    for other in OTHERS:
+        z    = pair_data[other]["z"]
+        beta = pair_data[other]["beta"]
 
-    # Entry / exit
-    if prev == 0:
-        if z_val < -Z_ENTRY:
-            signal =  1
-        elif z_val > Z_ENTRY:
-            signal = -1
-    elif prev ==  1 and z_val > -Z_EXIT:
-        signal = 0
-    elif prev == -1 and z_val <  Z_EXIT:
-        signal = 0
+        if date not in z.index or pd.isna(z[date]) or pd.isna(beta[date]):
+            continue
 
-    if signal == prev:
-        return orders
+        z_val = z[date]
+        prev  = signals[other]
+        new   = prev
 
-    # Target shares
-    bench_tgt = int(POSITION_SIZE * signal)
-    other_tgt = int(-POSITION_SIZE * beta[date] * signal)
+        if prev == 0:
+            if z_val < -Z_ENTRY:
+                new =  1
+            elif z_val > Z_ENTRY:
+                new = -1
+        elif prev ==  1 and z_val > -Z_EXIT:
+            new = 0
+        elif prev == -1 and z_val <  Z_EXIT:
+            new = 0
 
-    for ticker, tgt in [(BENCHMARK, bench_tgt), (OTHER, other_tgt)]:
+        signals[other] = new
+
+        bench_tgt = int(POSITION_SIZE * new)
+        other_tgt = int(-POSITION_SIZE * beta[date] * new)
+
+        desired[BENCHMARK] += bench_tgt
+        desired[other]     += other_tgt
+
+    for ticker, tgt in desired.items():
         curr  = portfolio.get(ticker, 0)
         delta = tgt - curr
         if delta != 0:
