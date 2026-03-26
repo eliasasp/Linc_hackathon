@@ -44,7 +44,7 @@ class DynamicCorrelationMatrix:
         return self.matrix
 
 class IncrementalCorrelationFilter:
-    def __init__(self, n_particles=300, sigma_z=0.02):
+    def __init__(self, n_particles=1000, sigma_z=0.03):
         self.n_particles = n_particles
         self.sigma_z = sigma_z
         

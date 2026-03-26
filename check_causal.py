@@ -16,7 +16,7 @@ def run_algorithm() -> pd.DataFrame:
     cmd = (
         "import runpy, trading_simulator; "
         "trading_simulator.TradingSimulator.plot_performance = lambda *a, **k: None; "
-        "runpy.run_path('algorithm.py')"
+        "runpy.run_path('main_algorithm.py')"
     )
     result = subprocess.run(
         [sys.executable, "-c", cmd],
@@ -25,9 +25,14 @@ def run_algorithm() -> pd.DataFrame:
         text=True,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"algorithm.py failed:\n{result.stdout}\n{result.stderr}")
+        raise RuntimeError(f"main_algorithm.py failed:\n{result.stdout}\n{result.stderr}")
 
-    return pd.read_csv(ORDERS_PATH, parse_dates=["Date"])
+    df = pd.read_csv(ORDERS_PATH)
+    # Tvinga konvertering till datetime. format='mixed' hanterar olika format 
+    # och errors='coerce' sätter ogiltiga datum (t.ex. tomma strängar) till NaT.
+    df["Date"] = pd.to_datetime(df["Date"], format='mixed', errors='coerce')
+    return df
+    #return pd.read_csv(ORDERS_PATH, parse_dates=["Date"])
 
 
 def main() -> int:
