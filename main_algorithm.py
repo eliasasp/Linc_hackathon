@@ -3,24 +3,26 @@ import numpy as np
 from trading_simulator import TradingSimulator
 import volatility_sisr
 import correlation_sisr
-import matplotlib.pyplot as plt 
+from plt_pairtrade import plot_pairs_trade
 
-def calculate_zscore(hist1, hist2, vol1, vol2, rho):
+def calculate_zscore(hist1, hist2, current_sigma):
     """Beräknar Z-score för spreaden mellan två historiska pris-serier"""
     # Vi använder log-priser för att få procentuell spridning
     spread = np.log(np.array(hist1)) - np.log(np.array(hist2))
-    mu = np.mean(spread) 
-    var1 = vol1**2
-    var2 = vol2**2
-    variance_spread = var1 + var2 - 2 * vol1 * vol2 * rho
-    sigma = np.sqrt(max(variance_spread, 1e-8))
-    if sigma == 0: 
-        return 0.0 
-    return (spread[-1] - mu) / sigma
+    mu = np.mean(spread)#kolla på om man vill begränsa fönsterstorleken
+    #kolla på att ändra till partikelfilter
+    
+    if current_sigma == 0: 
+        return 0.0
+    return (spread[-1] - mu) / current_sigma
+
+
+
 
 
 def main_algorithm(row_pos, cash, portfolio, signal_prices, data):
-    orders = []    
+    orders = []
+    
     # Packa upp våra verktyg och parametrar
     all_assets = data['assets']
     corr_manager = data['corr_manager']
@@ -56,6 +58,18 @@ def main_algorithm(row_pos, cash, portfolio, signal_prices, data):
         vols_today[asset] = vol_filters[asset].update(p_today)
         last_prices[asset] = p_today
 
+    
+    # +++ NYTT: BERÄKNA ADAPTIVT ENTRY-KRAV +++
+    # Vi mäter marknadens totala stress genom snittvolatiliteten för alla assets
+    avg_market_vol = np.mean(list(vols_today.values()))
+    
+    # Om marknadsvolten är högre än params['base_vol'] (t.ex. 0.01), höjer vi ribban för Z-score
+    # Detta stoppar oss från att "jaga brus" under kriser som 1994
+    base_vol = params.get('base_vol', 0.01) 
+    vol_multiplier = max(1.0, avg_market_vol / base_vol)
+    adaptive_z_entry = params['z_entry_lo'] * vol_multiplier
+
+
     # ---------------------------------------------------------
     # 2. UPPDATERA MATRISEN (SISR Korrelation)
     # ---------------------------------------------------------
@@ -73,13 +87,23 @@ def main_algorithm(row_pos, cash, portfolio, signal_prices, data):
     
     for pair_key, p_data in open_pairs.items():
         a1, a2 = pair_key
-        idx1 = corr_manager.asset_to_idx[a1]
-        idx2 = corr_manager.asset_to_idx[a2]
-        rho_today = current_matrix[idx1, idx2]
-        z = calculate_zscore(history[a1], history[a2], vols_today[a1], vols_today[a2], rho_today)
+
+        a1_idx = corr_manager.asset_to_idx[a1]
+        a2_idx = corr_manager.asset_to_idx[a2]
+
+        rho_today = current_matrix[a1_idx, a2_idx]
+        vol_today = vols_today[a1] + vols_today[a2] + 2 * vols_today[a1] * vols_today[a2] * rho_today # stdavv för skillnaden mellan tillgångarna som går in i zscore
+
+        z = calculate_zscore(history[a1], history[a2], vol_today)
         direction = p_data['direction']
         
         exit_trade = False
+
+        # ===== **TIME STOP** (NYTT BLOCK) =====
+        time_in_trade = data['step_count'] - p_data['entry_step']
+
+        if time_in_trade > params['time_stop']:
+            exit_trade = True
         
         # Om vi köpte a1 och blankade a2 (direction == 1, vi väntade på att Z skulle gå UPP)
         if direction == 1:
@@ -111,7 +135,7 @@ def main_algorithm(row_pos, cash, portfolio, signal_prices, data):
     # 4. HITTA OCH ÖPPNA NYA PAIRS
     # ---------------------------------------------------------
     # Hämta de topp 10 mest korrelerade paren idag
-    top_10 = correlation_sisr.get_top_correlations(current_matrix, all_assets, top_n=3)
+    top_10 = correlation_sisr.get_top_correlations(current_matrix, all_assets, top_n=16)
     
     for item in top_10:
         rho = item['value']
@@ -123,44 +147,75 @@ def main_algorithm(row_pos, cash, portfolio, signal_prices, data):
         # Dela upp stringen för att få fram tillgångarna (ex "Comm_01 & Comm_02")
         a1, a2 = item['pair'].split(' & ')
         pair_key = (a1, a2)
-
-        # NY KOD: Översätt namn till index först
-        idx1 = corr_manager.asset_to_idx[a1]
-        idx2 = corr_manager.asset_to_idx[a2]
-        rho_today = current_matrix[idx1, idx2]
-        z = calculate_zscore(history[a1], history[a2], vols_today[a1], vols_today[a2], rho_today)
+        
+        # Kolla så vi inte redan har en öppen trade för detta par
+        if pair_key in open_pairs or (a2, a1) in open_pairs: #kanske ta bort denna sen!
+            continue
+            
+        
+        vol_today = vols_today[a1] + vols_today[a2] + 2 * vols_today[a1] * vols_today[a2] * rho
+        # Beräkna prisspridningen i standardavvikelser
+        
+        # Dynamisk "Target Volatility": Vi vill att paret ska svänga max t.ex. 1% per dag
+        target_vol = 0.01 
+        risk_scaler = (target_vol / max(vol_today, 0.0001))*1000
+        # Begränsa så vi inte satsar mer än 15% oavsett hur låg vol är
+        position_size = min(0.15, 0.05 * risk_scaler)
+          
+        
+        z = calculate_zscore(history[a1], history[a2], vol_today)
         
         # Handla endast om spridningen är onormalt stor
-        if abs(z) > params['z_entry']:
-
-            # Insats: 1% av totala kassan per "ben" i paret
-            notional = cash * 0.05
+        if abs(z) > adaptive_z_entry:
+            
+            # Insats: 5% av totala kassan per "ben" i paret
+            notional = cash * position_size
             q1 = int(notional / signal_prices[a1])
             q2 = int(notional / signal_prices[a2])
             
             if q1 == 0 or q2 == 0:
                 continue
                 
-            if z > params['z_entry']:
+            if z > adaptive_z_entry:
                 # Z är hög. Det betyder att a1 är övervärderad i förhållande till a2.
                 orders.append(('SELL', a1, q1)) # Blanka a1
                 orders.append(('BUY', a2, q2))  # Köp a2
-                open_pairs[pair_key] = {'direction': -1, 'q1': q1, 'q2': q2, 'entry_z': z}
+                open_pairs[pair_key] = {'direction': -1, 'q1': q1, 'q2': q2, 'entry_z': z, 'entry_step': data['step_count']}
                 
-            elif z < -params['z_entry']:
+            elif z < -adaptive_z_entry:
                 # Z är låg. Det betyder att a1 är undervärderad.
                 orders.append(('BUY', a1, q1))  # Köp a1
                 orders.append(('SELL', a2, q2)) # Blanka a2
-                open_pairs[pair_key] = {'direction': 1, 'q1': q1, 'q2': q2, 'entry_z': z}
+                open_pairs[pair_key] = {'direction': 1, 'q1': q1, 'q2': q2, 'entry_z': z, 'entry_step': data['step_count']}
 
     return orders
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def run_backtest():
     print("Laddar prisdata...")
     prices = pd.read_csv('prices.csv', index_col='Date', parse_dates=['Date'])
-    all_assets = prices.columns.tolist()
+    
+    #selected_assets = ['Stock_01', 'Stock_02', 'Stock_03', 'Stock_04' , 'Stock_05' ,'Stock_06', 'Stock_07', 'Stock_08', 'Stock_09', 'Stock_10', 'Stock_11', 'Stock_12', 'Stock_13', 'Stock_14', 'Stock_15', 'Idx_04']
+    #selected_assets = ['Comm_01', 'Comm_02', 'Comm_03', 'Comm_04', 'Comm_05', 'Comm_06']
+    selected_assets = ['Idx_02', 'Idx_03', 'Idx_04', 'Stock_02', 'Stock_03', 'Stock_06','Stock_09']
 
+    prices = prices[selected_assets]
+
+    all_assets = prices.columns.tolist()
+    
     print(f"Initierar korrelationsmatris och volatilitetsfilter för {len(all_assets)} tillgångar...")
     corr_manager = correlation_sisr.DynamicCorrelationMatrix(all_assets)
     vol_filters = {}
@@ -184,11 +239,14 @@ def run_backtest():
         'history': {asset: [] for asset in all_assets},
         'open_pairs': {}, 
         'params': {
-            'window': 55,         # Dagar för rullande medelvärde
-            'corr_thresh': 0.75,  # Lägsta korrelation för att överväga paret
-            'z_entry': 2.0,       # Starta bettet vid 2 standardavvikelser
-            'z_exit': 0.2,        # Ta vinst när Z går under 0.5
-            'z_stop': 8.0         # Panik-sälj om spridningen fortsätter till 4.0
+            'window': 60,         # Dagar för rullande medelvärde
+            'corr_thresh': 0.58,  # Lägsta korrelation för att överväga paret
+            'z_entry_lo': 1.4,       # Starta bettet om z > z_entry_lo
+            #'z_entry_hi': 3,        # .. och om z < z_entry hi
+            'base_vol': 0.02,       #(Normal dags-volatilitet)
+            'z_exit': 0.25,        # Ta vinst när Z går under [...]
+            'z_stop': 9,          # Panik-sälj om spridningen fortsätter 
+            'time_stop': 1e8
         }
     }
     
@@ -204,95 +262,15 @@ def run_backtest():
         data=strategy_data
     )
     
+    # Spara och kolla hur mycket pengar vi tjänade
     simulator.save_results("pairs_orders.csv", "pairs_portfolio.csv")
     simulator.plot_performance(prices, save_file="pairs_performance.png")
 
-
-def plot_pairs_trade(prices_file, orders_file, asset1, asset2, window=60, z_entry=2.0, z_exit=0.5):
-    print(f"Ritar upp Pairs Trade-analys för {asset1} och {asset2}...")
-    
-    # 1. Ladda data
-    prices_df = pd.read_csv(prices_file, index_col='Date', parse_dates=True)
-    try:
-        orders_df = pd.read_csv(orders_file, parse_dates=['Date'])
-    except FileNotFoundError:
-        print(f"Kunde inte hitta {orders_file}. Kör backtestet först!")
-        return
-
-    # Hantera kolumnnamn (Ticker vs Asset)
-    col_ticker = 'Ticker' if 'Ticker' in orders_df.columns else 'Asset'
-    
-    # 2. Beräkna den historiska spreaden och Z-score (exakt som i algoritmen)
-    p1 = prices_df[asset1]
-    p2 = prices_df[asset2]
-    
-    # Log-spread
-    spread = np.log(p1) - np.log(p2)
-    
-    # Rullande Z-score
-    rolling_mean = spread.rolling(window=window).mean()
-    rolling_std = spread.rolling(window=window).std()
-    z_score = (spread - rolling_mean) / rolling_std
-
-    # 3. Hitta de dagar då BÅDA tillgångarna handlades (våra entry/exits)
-    o1 = orders_df[orders_df[col_ticker] == asset1]
-    o2 = orders_df[orders_df[col_ticker] == asset2]
-    
-    # Slå ihop dem på datum för att hitta par-transaktionerna
-    pair_trades = pd.merge(o1, o2, on='Date', suffixes=('_1', '_2'))
-    
-    # -- RITA GRAFERNA --
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), sharex=True, gridspec_kw={'height_ratios': [2, 1]})
-    
-    # --- ÖVRE GRAFEN: Normaliserade priser ---
-    # Vi delar med första giltiga priset så att båda börjar på 1.0 (enklare att jämföra)
-    ax1.plot(prices_df.index, p1 / p1.iloc[window], label=f'{asset1}', color='blue', linewidth=1.5)
-    ax1.plot(prices_df.index, p2 / p2.iloc[window], label=f'{asset2}', color='orange', linewidth=1.5)
-    ax1.set_title(f'Pairs Trading Analys: {asset1} vs {asset2}', fontsize=16, fontweight='bold')
-    ax1.set_ylabel('Normaliserat Pris', fontsize=12)
-    ax1.legend(loc='upper left')
-    ax1.grid(True, linestyle='--', alpha=0.5)
-
-    # --- UNDRE GRAFEN: Z-score och signaler ---
-    ax2.plot(prices_df.index, z_score, label='Z-score (Spread)', color='purple', linewidth=1.5)
-    
-    # Rita ut våra trigger-linjer
-    ax2.axhline(z_entry, color='red', linestyle='--', alpha=0.6, label=f'Entry (+{z_entry})')
-    ax2.axhline(-z_entry, color='green', linestyle='--', alpha=0.6, label=f'Entry (-{z_entry})')
-    ax2.axhline(z_exit, color='gray', linestyle=':', alpha=0.6, label=f'Exit (+{z_exit})')
-    ax2.axhline(-z_exit, color='gray', linestyle=':', alpha=0.6, label=f'Exit (-{z_exit})')
-    ax2.axhline(0, color='black', linewidth=1)
-
-    # Lägg ut markörer för tradesen
-    for _, trade in pair_trades.iterrows():
-        date = trade['Date']
-        act1 = trade['Action_1']
-        
-        # Hämta Z-scoret för just denna dag
-        z_val = z_score.loc[date]
-        
-        # Logik för att färga pilarna:
-        if act1 == 'SELL' and z_val > 1.0:
-            # Vi blankade Asset 1 för att Z var högt (Övervärderad)
-            ax2.scatter(date, z_val, color='red', marker='v', s=150, zorder=5, edgecolors='black')
-        elif act1 == 'BUY' and z_val < -1.0:
-            # Vi köpte Asset 1 för att Z var lågt (Undervärderad)
-            ax2.scatter(date, z_val, color='green', marker='^', s=150, zorder=5, edgecolors='black')
-        else:
-            # Om Z är nära 0, är det en stängning (Exit)
-            ax2.scatter(date, z_val, color='yellow', marker='X', s=150, zorder=5, edgecolors='black')
-
-    ax2.set_ylabel('Z-Score', fontsize=12)
-    ax2.set_xlabel('Datum', fontsize=12)
-    ax2.legend(loc='upper left', fontsize=10)
-    ax2.grid(True, linestyle='--', alpha=0.5)
-    
-    plt.tight_layout()
-    plt.show()
-
-# ==========================================
-# TESTA FUNKTIONEN (Lägg detta längst ner i din fil)
-# ==========================================
-
 if __name__ == "__main__":
     run_backtest()
+ 
+
+    '''plot_pairs_trade('prices.csv', 'pairs_orders.csv', 'Idx_04', 'Stock_02')
+    plot_pairs_trade('prices.csv', 'pairs_orders.csv', 'Idx_04', 'Stock_03')
+    plot_pairs_trade('prices.csv', 'pairs_orders.csv', 'Idx_04', 'Stock_09')
+    plot_pairs_trade('prices.csv', 'pairs_orders.csv', 'Idx_02', 'Idx_03')'''
