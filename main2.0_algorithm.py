@@ -99,14 +99,14 @@ def main_algorithm(row_pos, cash, portfolio, signal_prices, data):
         
         exit_trade = False
 
-        # ===== CORRELATION GUARD (⭐ NYTT BLOCK) =====
+        # ===== CORRELATION GUARD ( NYTT BLOCK) =====
         if rho_today < params['min_active_corr']:
             exit_trade = True
 
         # ===== **TIME STOP** (NYTT BLOCK) =====
         time_in_trade = data['step_count'] - p_data['entry_step']
 
-        if time_in_trade > params['time_stop'] and abs(z) > 0.8:
+        if time_in_trade > params['time_stop'] and abs(z) > 0.6:
             exit_trade = True
         
         # Om vi köpte a1 och blankade a2 (direction == 1, vi väntade på att Z skulle gå UPP)
@@ -164,10 +164,10 @@ def main_algorithm(row_pos, cash, portfolio, signal_prices, data):
         target_vol = 0.01 
         risk_scaler = (target_vol / max(vol_today, 0.0001))*40
         # Begränsa så vi inte satsar mer än 17% TOTALT I PARET oavsett hur låg vol är
-        position_size = min(0.20, 0.05 * risk_scaler)
+        position_size = min(0.18, 0.05 * risk_scaler)
 
         # **vikta traden mot den asset som har högre volatilitet <-> den vi tror reagerar starkast på divergensbeteendet
-        w_1 = 1 / ( (vols_today[a2]/vols_today[a1])**4 + 1 )
+        w_1 = 1 / ( (vols_today[a2]/vols_today[a1])**3 + 1 )
         w_2 = 1 - w_1
 
         position_size_1 = w_1 * position_size
@@ -253,15 +253,15 @@ def run_backtest():
         'open_pairs': {}, 
         'params': {
             'window': 60,         # Dagar för rullande medelvärde
-            'corr_thresh': 0.45,  # Lägsta korrelation för att överväga paret
+            'corr_thresh': 0.4,  # Lägsta korrelation för att överväga paret
             'z_entry_lo': 1.4,       # Starta bettet om z > z_entry_lo
             #'z_entry_hi': 3,        # .. och om z < z_entry hi
-            'base_vol': 0.03,       #(Normal dags-volatilitet)
+            'base_vol': 0.012,       #(Normal dags-volatilitet)
             'z_exit': 0.5,        # Ta vinst när Z går under [...]
             'z_stop': 9,          # Panik-sälj om spridningen fortsätter 
-            'time_stop': 1e8,
-            'min_active_corr': 0.01,   # ⭐ NYTT (exit om korrelation dör)
-            'top_N':14
+            'time_stop': 20,
+            'min_active_corr': 0.3,   # ⭐ NYTT (exit om korrelation dör)
+            'top_N':15
 
         }
     }

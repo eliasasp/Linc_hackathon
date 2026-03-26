@@ -11,12 +11,14 @@ prices = pd.read_csv("prices.csv", index_col="Date", parse_dates=True)
 
 
 # ==== Stock correlation heatmap ====
-def plot_stock_correlation_heatmap(prices):
+def plot_stock_FX_correlation_heatmap(prices):
     # Select stock columns
     STOCK_COLS = [c for c in prices.columns if c.startswith("Stock_")]
-
+    FX_COLS = [c for c in prices.columns if c.startswith("FX_")]
     # Compute returns
-    returns = prices[STOCK_COLS].pct_change().dropna()
+    cols = STOCK_COLS + FX_COLS
+    
+    returns = prices[cols].pct_change().dropna()
 
     # Correlation matrix
     corr = returns.corr()
@@ -32,13 +34,13 @@ def plot_stock_correlation_heatmap(prices):
         cbar_kws={"shrink": 0.8}
     )
 
-    plt.title("Stock Return Correlation Heatmap")
+    plt.title("Stock,FX Return Correlation Heatmap")
     plt.xticks(rotation=45)
     plt.yticks(rotation=0)
     plt.tight_layout()
     plt.show()
 
-plot_stock_correlation_heatmap(prices)
+plot_stock_FX_correlation_heatmap(prices)
 
 
 
