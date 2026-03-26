@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt 
 
-def plot_pairs_trade(prices_file, orders_file, asset1, asset2, window=60, z_entry=2.0, z_exit=0.5):
+def plot_pairs_trade(prices_file, orders_file, asset1, asset2, window=60, z_entry=1.4, z_exit=0.5):
     print(f"Ritar upp Pairs Trade-analys för {asset1} och {asset2}...")
     
     # 1. Ladda data

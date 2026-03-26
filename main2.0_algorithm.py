@@ -164,7 +164,7 @@ def main_algorithm(row_pos, cash, portfolio, signal_prices, data):
         target_vol = 0.01 
         risk_scaler = (target_vol / max(vol_today, 0.0001))*40
         # Begränsa så vi inte satsar mer än 17% TOTALT I PARET oavsett hur låg vol är
-        position_size = min(0.18, 0.05 * risk_scaler)
+        position_size = min(0.20, 0.05 * risk_scaler)
 
         # **vikta traden mot den asset som har högre volatilitet <-> den vi tror reagerar starkast på divergensbeteendet
         w_1 = 1 / ( (vols_today[a2]/vols_today[a1])**3 + 1 )
@@ -286,11 +286,11 @@ if __name__ == "__main__":
     run_backtest()
  
 
-    #plot_pairs_trade('prices.csv', 'pairs_orders.csv', 'Idx_04', 'Stock_02')
-    #plot_pairs_trade('prices.csv', 'pairs_orders.csv', 'Idx_04', 'Stock_03')
-    #plot_pairs_trade('prices.csv', 'pairs_orders.csv', 'Idx_04', 'Stock_09')
+    '''plot_pairs_trade('prices.csv', 'pairs_orders.csv', 'Idx_04', 'Stock_02')
+    plot_pairs_trade('prices.csv', 'pairs_orders.csv', 'Idx_04', 'Stock_03')
+    plot_pairs_trade('prices.csv', 'pairs_orders.csv', 'Idx_04', 'Stock_09')
     plot_pairs_trade('prices.csv', 'pairs_orders.csv', 'Idx_02', 'Idx_03')
-    #plot_pairs_trade('prices.csv', 'pairs_orders.csv', 'Stock_02', 'Stock_03')
+    plot_pairs_trade('prices.csv', 'pairs_orders.csv', 'Stock_02', 'Stock_03')'''
 
 
 
