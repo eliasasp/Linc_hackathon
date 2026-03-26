@@ -5,6 +5,7 @@ import volatility_sisr
 import correlation_sisr
 import matplotlib.pyplot as plt 
 
+# BYT UT MOT DENNA:
 def calculate_zscore(hist1, hist2, vol1, vol2, rho):
     """Beräknar Z-score för spreaden mellan två historiska pris-serier"""
     # Vi använder log-priser för att få procentuell spridning

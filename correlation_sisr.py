@@ -178,7 +178,7 @@ def get_top_correlations(matrix, assets, top_n=10):
     
     # Sortera listan baserat på värdet (fallande)
     sorted_corr = sorted(correlations, key=lambda x: x['value'], reverse=True)
-    #print( sorted_corr[:top_n] )
+    #print( sorted_corr[:3] )
     return sorted_corr[:top_n]
 
 
