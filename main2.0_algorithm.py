@@ -63,7 +63,7 @@ def main_algorithm(row_pos, cash, portfolio, signal_prices, data):
     # Vi mäter marknadens totala stress genom snittvolatiliteten för alla assets
     avg_market_vol = np.mean(list(vols_today.values()))
     
-    # Om marknadsvolten är högre än params['base_vol'] (t.ex. 0.01), höjer vi ribban för Z-score
+    # Om marknadsvol är högre än params['base_vol'] (t.ex. 0.01), höjer vi ribban för Z-score
     # Detta stoppar oss från att "jaga brus" under kriser som 1994
     base_vol = params.get('base_vol', 0.01) 
     vol_multiplier = max(1.0, avg_market_vol / base_vol)
@@ -99,10 +99,14 @@ def main_algorithm(row_pos, cash, portfolio, signal_prices, data):
         
         exit_trade = False
 
+        # ===== CORRELATION GUARD (⭐ NYTT BLOCK) =====
+        if rho_today < params['min_active_corr']:
+            exit_trade = True
+
         # ===== **TIME STOP** (NYTT BLOCK) =====
         time_in_trade = data['step_count'] - p_data['entry_step']
 
-        if time_in_trade > params['time_stop']:
+        if time_in_trade > params['time_stop'] and abs(z) > 0.8:
             exit_trade = True
         
         # Om vi köpte a1 och blankade a2 (direction == 1, vi väntade på att Z skulle gå UPP)
@@ -134,10 +138,10 @@ def main_algorithm(row_pos, cash, portfolio, signal_prices, data):
     # ---------------------------------------------------------
     # 4. HITTA OCH ÖPPNA NYA PAIRS
     # ---------------------------------------------------------
-    # Hämta de topp 10 mest korrelerade paren idag
-    top_10 = correlation_sisr.get_top_correlations(current_matrix, all_assets, top_n=16)
+    # Hämta de topp (...) mest korrelerade paren idag
+    top_N = correlation_sisr.get_top_correlations(current_matrix, all_assets, top_n=params['top_N'])
     
-    for item in top_10:
+    for item in top_N:
         rho = item['value']
         
         # Filtrera: Bara handla på urstarka samband
@@ -158,20 +162,29 @@ def main_algorithm(row_pos, cash, portfolio, signal_prices, data):
         
         # Dynamisk "Target Volatility": Vi vill att paret ska svänga max t.ex. 1% per dag
         target_vol = 0.01 
-        risk_scaler = (target_vol / max(vol_today, 0.0001))*1000
-        # Begränsa så vi inte satsar mer än 15% oavsett hur låg vol är
-        position_size = min(0.15, 0.05 * risk_scaler)
-          
+        risk_scaler = (target_vol / max(vol_today, 0.0001))*40
+        # Begränsa så vi inte satsar mer än 17% TOTALT I PARET oavsett hur låg vol är
+        position_size = min(0.20, 0.05 * risk_scaler)
+
+        # **vikta traden mot den asset som har högre volatilitet <-> den vi tror reagerar starkast på divergensbeteendet
+        w_1 = 1 / ( (vols_today[a2]/vols_today[a1])**4 + 1 )
+        w_2 = 1 - w_1
+
+        position_size_1 = w_1 * position_size
+        position_size_2 = w_2 * position_size
         
         z = calculate_zscore(history[a1], history[a2], vol_today)
         
         # Handla endast om spridningen är onormalt stor
         if abs(z) > adaptive_z_entry:
             
-            # Insats: 5% av totala kassan per "ben" i paret
-            notional = cash * position_size
-            q1 = int(notional / signal_prices[a1])
-            q2 = int(notional / signal_prices[a2])
+            # Insats: viktad efter varje tillgångs nuvarande volatilitet
+            notional_1 = cash * position_size_1
+            notional_2 = cash * position_size_2
+
+
+            q1 = int(notional_1 / signal_prices[a1])
+            q2 = int(notional_2 / signal_prices[a2])
             
             if q1 == 0 or q2 == 0:
                 continue
@@ -210,7 +223,7 @@ def run_backtest():
     
     #selected_assets = ['Stock_01', 'Stock_02', 'Stock_03', 'Stock_04' , 'Stock_05' ,'Stock_06', 'Stock_07', 'Stock_08', 'Stock_09', 'Stock_10', 'Stock_11', 'Stock_12', 'Stock_13', 'Stock_14', 'Stock_15', 'Idx_04']
     #selected_assets = ['Comm_01', 'Comm_02', 'Comm_03', 'Comm_04', 'Comm_05', 'Comm_06']
-    selected_assets = ['Idx_02', 'Idx_03', 'Idx_04', 'Stock_02', 'Stock_03', 'Stock_06','Stock_09']
+    selected_assets = ['Idx_02', 'Idx_03', 'Idx_04', 'Stock_02', 'Stock_03', 'Stock_06', 'Stock_09']
 
     prices = prices[selected_assets]
 
@@ -240,13 +253,16 @@ def run_backtest():
         'open_pairs': {}, 
         'params': {
             'window': 60,         # Dagar för rullande medelvärde
-            'corr_thresh': 0.58,  # Lägsta korrelation för att överväga paret
+            'corr_thresh': 0.45,  # Lägsta korrelation för att överväga paret
             'z_entry_lo': 1.4,       # Starta bettet om z > z_entry_lo
             #'z_entry_hi': 3,        # .. och om z < z_entry hi
-            'base_vol': 0.02,       #(Normal dags-volatilitet)
-            'z_exit': 0.25,        # Ta vinst när Z går under [...]
+            'base_vol': 0.03,       #(Normal dags-volatilitet)
+            'z_exit': 0.5,        # Ta vinst när Z går under [...]
             'z_stop': 9,          # Panik-sälj om spridningen fortsätter 
-            'time_stop': 1e8
+            'time_stop': 1e8,
+            'min_active_corr': 0.01,   # ⭐ NYTT (exit om korrelation dör)
+            'top_N':14
+
         }
     }
     
@@ -270,8 +286,15 @@ if __name__ == "__main__":
     run_backtest()
  
 
-    '''plot_pairs_trade('prices.csv', 'pairs_orders.csv', 'Idx_04', 'Stock_02')
-    plot_pairs_trade('prices.csv', 'pairs_orders.csv', 'Idx_04', 'Stock_03')
-    plot_pairs_trade('prices.csv', 'pairs_orders.csv', 'Idx_04', 'Stock_09')
-    plot_pairs_trade('prices.csv', 'pairs_orders.csv', 'Idx_02', 'Idx_03')'''
+    #plot_pairs_trade('prices.csv', 'pairs_orders.csv', 'Idx_04', 'Stock_02')
+    #plot_pairs_trade('prices.csv', 'pairs_orders.csv', 'Idx_04', 'Stock_03')
+    #plot_pairs_trade('prices.csv', 'pairs_orders.csv', 'Idx_04', 'Stock_09')
+    plot_pairs_trade('prices.csv', 'pairs_orders.csv', 'Idx_02', 'Idx_03')
+    #plot_pairs_trade('prices.csv', 'pairs_orders.csv', 'Stock_02', 'Stock_03')
 
+
+
+
+
+#imorrn: kolla om vi kan implementera win/lose ratio och på något sätt se om vi kan bestämma position size utifrån det
+#verkade funka bra att vikta varje ben, kan vi vikta starkare? tex **2
